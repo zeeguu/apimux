@@ -8,12 +8,12 @@ class Logger(object):
     _LEVELS = [logging.CRITICAL, logging.ERROR,
                logging.WARNING, logging.INFO,
                logging.DEBUG]
-    FILE_LOG = None
 
     def __init__(self, name=LOGGER_NAME, log_stdout=True,
                  file_log=None, loglevel=LOG_LEVEL):
         self._logger = logging.getLogger(name)
-        Logger.FILE_LOG = file_log
+        self.log_to_file = file_log is not None
+        self.file_log = file_log
         if loglevel <= len(self._LEVELS):
             loglvl = self._LEVELS[loglevel - 1]
         else:
@@ -36,9 +36,10 @@ class Logger(object):
         self._logger.setLevel(loglvl)
 
 
-Logger(name=LOGGER_NAME, loglevel=LOG_LEVEL, file_log=LOG_TO_FILE)
+Logger(name=LOGGER_NAME, loglevel=LOG_LEVEL,
+       file_log=LOG_TO_FILE, log_stdout=False)
 logger = logging.getLogger(LOGGER_NAME)
 logger.debug("Logger initialized")
-logger.debug("Writing to file enabled: %s" % (Logger.FILE_LOG is not None))
-if Logger.FILE_LOG is not None:
-    logger.debug("Writing to file: %s" % Logger.FILE_LOG)
+logger.debug("Writing to file enabled: %s" % (LOG_TO_FILE is not None))
+if LOG_TO_FILE is not None:
+    logger.debug("Writing to file: %s" % LOG_TO_FILE)

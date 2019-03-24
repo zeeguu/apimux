@@ -1,6 +1,6 @@
 LOGGER_NAME = 'apimux'
 LOG_LEVEL = 5
-LOG_TO_FILE = None
+LOG_TO_FILE = "apimux.log"
 
 MAX_WORKERS = 8
 
