@@ -20,7 +20,7 @@ MAX_WAIT_TIME = 0
 
 class APIMultiplexer(object):
     def __init__(self, api_list=[], enable_periodic_check=False,
-                 ignore_slow_apis=False):
+                 ignore_slow_apis=False, a_b_testing=False):
         logger.debug("Initializing the APIMultiplexer class")
         self._dynamic_api_registering = True
         self._locks = {}
@@ -51,6 +51,12 @@ class APIMultiplexer(object):
 
         # Queue new requests and wait for them even when the API is slow
         self._ignore_slow_apis = ignore_slow_apis
+        # Whether it should enable A/B testing or not
+        self._a_b_testing = a_b_testing
+        if a_b_testing:
+            logger.debug("A/B testing enabled!")
+            self._current_order = []
+            self._locks["_current_order"] = Lock()
 
         if enable_periodic_check:
             # Periodic check thread
@@ -191,6 +197,21 @@ class APIMultiplexer(object):
                     # returned_data[apiname] = data
                 second_loop = True
             logger.debug("Futures to api map: %s" % future_to_api)
+        if self._a_b_testing:
+            a_b_returned_data = []
+            with self._locks["_current_order"]:
+                if len(self._current_order) == 0:
+                    self._current_order = [x[0] for x in returned_data]
+                    logger.debug("Initial order: %s" % self._current_order)
+            for x in self._current_order:
+                a_b_returned_data += [
+                    y for y in returned_data if y[0] == x]
+            # Shift the current order to the left
+            logger.debug("Current a/b order: %s" % self._current_order)
+            self._current_order.append(self._current_order.pop(0))
+            logger.debug("New a/b order: %s" % self._current_order)
+            logger.debug("Returning data: %s" % a_b_returned_data)
+            return a_b_returned_data
         logger.debug("Returning data: %s" % returned_data)
         return returned_data
 
