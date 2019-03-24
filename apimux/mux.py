@@ -19,7 +19,8 @@ MAX_WAIT_TIME = 0
 
 
 class APIMultiplexer(object):
-    def __init__(self, api_list=[], enable_periodic_check=False):
+    def __init__(self, api_list=[], enable_periodic_check=False,
+                 ignore_slow_apis=False):
         logger.debug("Initializing the APIMultiplexer class")
         self._dynamic_api_registering = True
         self._locks = {}
@@ -47,6 +48,9 @@ class APIMultiplexer(object):
                 # Registering all APIs passed as parameters
                 self.register_new_api(x)
             self._dynamic_api_registering = False
+
+        # Queue new requests and wait for them even when the API is slow
+        self._ignore_slow_apis = ignore_slow_apis
 
         if enable_periodic_check:
             # Periodic check thread
@@ -118,9 +122,10 @@ class APIMultiplexer(object):
         with self._locks["add_remove_api"]:
             future_to_api = {}
             for apiname in self._api_list:
-                with self._locks["_futures_not_finished"]:
-                    if apiname in self._futures_not_finished.values():
-                        continue
+                if self._ignore_slow_apis:
+                    with self._locks["_futures_not_finished"]:
+                        if apiname in self._futures_not_finished.values():
+                            continue
                 api = self._api_list.get(apiname)
                 future_to_api[self._executor.submit(
                     self._get_result, api, data)] = apiname
