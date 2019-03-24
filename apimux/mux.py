@@ -19,7 +19,7 @@ MAX_WAIT_TIME = 0
 
 
 class APIMultiplexer(object):
-    def __init__(self, api_list=[]):
+    def __init__(self, api_list=[], enable_periodic_check=False):
         logger.debug("Initializing the APIMultiplexer class")
         self._dynamic_api_registering = True
         self._locks = {}
@@ -48,11 +48,12 @@ class APIMultiplexer(object):
                 self.register_new_api(x)
             self._dynamic_api_registering = False
 
-        # Periodic check thread
-        self._periodic_check_thread = Thread(
-            target=self._periodic_priority_check, args=())
-        self._periodic_check_thread.setDaemon(True)
-        self._periodic_check_thread.start()
+        if enable_periodic_check:
+            # Periodic check thread
+            self._periodic_check_thread = Thread(
+                target=self._periodic_priority_check, args=())
+            self._periodic_check_thread.setDaemon(True)
+            self._periodic_check_thread.start()
 
     def _time_function(self, f, data):
         start = timer()
@@ -153,7 +154,9 @@ class APIMultiplexer(object):
                             logger.debug("Marking has_results to true")
                             has_results = True
                         elif len(self._api_list) == len(returned_data):
-                            logger.debug("Marking has_results to true")
+                            if not has_results:
+                                logger.debug("Marking has_results to true. "
+                                             "Fetched data from all APIs.")
                             has_results = True
                         response_to_add = (apiname, data)
                         if response_to_add not in returned_data:
