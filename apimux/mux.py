@@ -6,7 +6,7 @@ import time
 from timeit import default_timer as timer
 
 from apimux.log import logger
-from apimux.constants import PERIODIC_CHECK, MAX_WORKERS
+from apimux.constants import PERIODIC_CHECK
 from apimux.rwlock import ReadWriteLock
 
 
@@ -22,8 +22,8 @@ class APIMultiplexer(object):
     def __init__(self, api_list=[], enable_periodic_check=False,
                  ignore_slow_apis=False, a_b_testing=False):
         logger.debug("Initializing the APIMultiplexer class")
-        self._dynamic_api_registering = True
         self._locks = {}
+        self._locks["_api_list"] = ReadWriteLock()
         self._api_list = {}
         self._locks["_api_priority"] = Lock()
         self._api_priority = {}
@@ -35,19 +35,10 @@ class APIMultiplexer(object):
         self._futures_not_finished = {}
         self._locks["_futures_not_finished"] = Lock()
 
-        # Additional locks
-        self._locks["add_remove_api"] = ReadWriteLock()
-
-        if len(api_list) == 0:
-            # No APIs passed, enabling dynamic registering/unregistering
-            # of new APIs with the MAX_WORKERS number of threads
-            self._executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
-        else:
-            self._executor = ThreadPoolExecutor(max_workers=len(api_list))
+        if len(api_list) > 0:
             for x in api_list:
                 # Registering all APIs passed as parameters
                 self.register_new_api(x)
-            self._dynamic_api_registering = False
 
         # Queue new requests and wait for them even when the API is slow
         self._ignore_slow_apis = ignore_slow_apis
@@ -98,13 +89,13 @@ class APIMultiplexer(object):
             sorted_percentile = sorted(self._percentile_map.items(),
                                        key=operator.itemgetter(1))
         logger.debug("Sorted by response time median: %s" % sorted_percentile)
-        with self._locks["add_remove_api"]:
+        with self._locks["_api_list"]:
             api = self._api_list.get(sorted_percentile.pop()[0])
         logger.info("Chosen API for request: %s" % api.name)
 
         result = self._get_result(api, data)
         while result is None and len(sorted_percentile) > 0:
-            with self._locks["add_remove_api"]:
+            with self._locks["_api_list"]:
                 api = self._api_list.get(sorted_percentile.pop()[0])
             logger.info("Reconfiguring API for request: %s" % api.name)
             result = self._get_result(api, data)
@@ -122,10 +113,9 @@ class APIMultiplexer(object):
         if fut is None:
             logger.warning("Tried to remove inexistent pending request")
 
-    def get_all_results(self, data):
-        """Gets the result from all APIs."""
+    def _get_all_results(self, data, executor):
         returned_data = []
-        with self._locks["add_remove_api"]:
+        with self._locks["_api_list"]:
             future_to_api = {}
             for apiname in self._api_list:
                 if self._ignore_slow_apis:
@@ -133,7 +123,7 @@ class APIMultiplexer(object):
                         if apiname in self._futures_not_finished.values():
                             continue
                 api = self._api_list.get(apiname)
-                future_to_api[self._executor.submit(
+                future_to_api[executor.submit(
                     self._get_result, api, data)] = apiname
             logger.debug("Futures to api map: %s" % future_to_api)
             has_results = False
@@ -173,7 +163,7 @@ class APIMultiplexer(object):
                         if response_to_add not in returned_data:
                             returned_data.append(response_to_add)
                     except (TimeoutError, CancelledError) as e:
-                        if not second_loop:
+                        if not second_loop and MAX_WAIT_TIME > 0:
                             logger.warning("%s generated an exception: %s"
                                            % (apiname, type(e)))
                             logger.warning("Ignoring API '%s' until it "
@@ -215,17 +205,30 @@ class APIMultiplexer(object):
         logger.debug("Returning data: %s" % returned_data)
         return returned_data
 
+    def get_all_results(self, data):
+        """Gets the result from all APIs."""
+        returned_data = []
+        executor = ThreadPoolExecutor(max_workers=len(self._api_list))
+        try:
+            returned_data = self._get_all_results(data, executor)
+            return returned_data
+        finally:
+            # Ask the executor to shutdown, the resources
+            # associated with the executor will be freed when all
+            # pending futures are done executing.
+            logger.debug("Sending signal to executor to shutdown once all"
+                         "futures are done executing: %s" % executor)
+            executor.shutdown(wait=False)
+
     def register_new_api(self, api):
         """Registers new API and adds it to the list for monitoring."""
         logger.info("New API to register: %s" % api.name)
-        if not self._dynamic_api_registering:
-            raise Exception("Dynamic registration of APIs is disabled")
-        # with self._locks["add_remove_api"]:
-        self._locks["add_remove_api"].acquire_write()
+        # with self._locks["_api_list"]:
+        self._locks["_api_list"].acquire_write()
         if self._api_list.get(api.name, None) is not None:
             raise Exception("API already exists in the list")
         self._api_list[api.name] = api
-        self._locks["add_remove_api"].release_write()
+        self._locks["_api_list"].release_write()
         # All APIs start from 0 initially, this will be automatically
         # reconfigured based on the performance of the APIs.
         with self._locks["_api_priority"]:
@@ -240,12 +243,10 @@ class APIMultiplexer(object):
     def remove_api(self, api):
         """Removes API from the backend list."""
         logger.info("Removing API: %s" % api.name)
-        if not self._dynamic_api_registering:
-            raise Exception("Dynamic removing of APIs is disabled")
-        # with self._locks["add_remove_api"]:
-        self._locks["add_remove_api"].acquire_write()
+        # with self._locks["_api_list"]:
+        self._locks["_api_list"].acquire_write()
         removed_api = self._api_list.pop(api.name, None)
-        self._locks["add_remove_api"].release_write()
+        self._locks["_api_list"].release_write()
         if removed_api is not None:
             logger.debug("Removed API")
         else:
@@ -289,7 +290,7 @@ class APIMultiplexer(object):
     def _periodic_priority_check(self):
         while True:
             logger.debug("Starting periodic priority check")
-            with self._locks["add_remove_api"]:
+            with self._locks["_api_list"]:
                 logger.debug("API list: %s" % self._api_list.keys())
                 for key in self._api_list:
                     api = self._api_list.get(key)
