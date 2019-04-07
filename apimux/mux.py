@@ -83,24 +83,59 @@ class APIMultiplexer(object):
         logger.debug("Fastest API available: %s" % fastest_api)
         return fastest_api.name
 
-    def get_result(self, data):
-        """Gets the first result from the best API."""
-        with self._locks["_percentile_map"]:
-            sorted_percentile = sorted(self._percentile_map.items(),
-                                       key=operator.itemgetter(1))
-        logger.debug("Sorted by response time median: %s" % sorted_percentile)
+    def _shift_current_order(self):
+        """Shifts the current API order and returns the first API"""
+        with self._locks["_current_order"]:
+            if len(self._current_order) == 0:
+                with self._locks["_api_list"]:
+                    self._current_order = [x for x in self._api_list]
+            logger.debug("Initial order: %s" % self._current_order)
+        logger.debug("Current a/b order: %s" % self._current_order)
+        apiname = self._current_order.pop(0)
+        self._current_order.append(apiname)
+        logger.debug("New a/b order: %s" % self._current_order)
         with self._locks["_api_list"]:
-            api = self._api_list.get(sorted_percentile.pop()[0])
-        logger.info("Chosen API for request: %s" % api.name)
+            first_api = self._api_list.get(apiname)
+        return first_api
 
-        result = self._get_result(api, data)
-        while result is None and len(sorted_percentile) > 0:
-            with self._locks["_api_list"]:
-                api = self._api_list.get(sorted_percentile.pop()[0])
-            logger.info("Reconfiguring API for request: %s" % api.name)
-            result = self._get_result(api, data)
+    def get_top_result(self, data):
+        """Gets the first result from the best API."""
+        chosen_api = None
+        current_retries = 0
+        result = None
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            if self._a_b_testing:
+                chosen_api = self._shift_current_order()
+            else:
+                with self._locks["_percentile_map"]:
+                    sorted_percentile = sorted(self._percentile_map.items(),
+                                               key=operator.itemgetter(1))
+                logger.debug(
+                    "Sorted by response time median: %s" % sorted_percentile)
+                with self._locks["_api_list"]:
+                    chosen_api = self._api_list.get(sorted_percentile.pop()[0])
 
-        return result
+            logger.info("Chosen API for request: %s" % chosen_api.name)
+            future = executor.submit(self._get_result, chosen_api, data)
+            # Call will block until the result is fetched
+            result = future.result()
+            while result is None:
+                # Continue fetching from next API
+                if self._a_b_testing:
+                    if current_retries > len(self._current_order):
+                        break
+                    current_retries += 1
+                    chosen_api = self._shift_current_order()
+                elif len(sorted_percentile) > 0:
+                    with self._locks["_api_list"]:
+                        chosen_api = self._api_list.get(
+                            sorted_percentile.pop()[0])
+                logger.info(
+                    "Reconfiguring API for request: %s" % chosen_api.name)
+                future = executor.submit(self._get_result, chosen_api, data)
+                result = future.result()
+
+        return [(chosen_api.name, result)]
 
     def get_next_result(self, data):
         """Gets the next result from the next best API."""
