@@ -12,7 +12,11 @@ class BaseThirdPartyAPIService(ABC):
     @abstractmethod
     def get_result(self, data):
         """Returns the result from the API. The user is expected to
-        fill in all the details about this."""
+        fill in all the details about this.
+
+        NOTE: If the answer is considered to be invalid, this method should
+        return None as a result.
+        """
         pass
 
     def check(self):
