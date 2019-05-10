@@ -139,7 +139,7 @@ class APIMultiplexer(object):
                                                         exc_traceback))
         return None
 
-    def _shift_current_order(self):
+    def _shift_current_order_and_get_first(self):
         """
         Updates the current order of API list used for round robin.
 
@@ -211,24 +211,33 @@ class APIMultiplexer(object):
             the subsequent calls to this function.
 
         """
-        if self._round_robin:
-            return self._shift_current_order(), None
 
-        if self._should_explore() and sp_list:
+        def get_exploratory_api_and_context():
             logger.debug("This request will try to explore with round-robin")
-            new_api = self._shift_current_order()
+            new_api = self._shift_current_order_and_get_first()
             logger.debug("Picking API %s" % new_api.name)
             # Remove the API that was picked from the list of remainings APIs
             new_sp_list = [x for x in sp_list if x[0] != new_api.name]
-            return self._shift_current_order(), new_sp_list
+            return new_api, new_sp_list
+
+        if self._round_robin:
+            return self._shift_current_order_and_get_first(), None
+
+        should_explore = self._should_explore()
 
         if sp_list:
+            if should_explore:
+                return get_exploratory_api_and_context()
+
             with self._locks["_api_list"]:
                 return self._api_list.get(sp_list.pop(0)[0]), sp_list
 
         with self._locks["_percentile_map"]:
             sp_list = sorted(self._percentile_map.items(),
                              key=operator.itemgetter(1))
+
+        if should_explore:
+            return get_exploratory_api_and_context()
 
         logger.debug("Sorted by response time median: %s" % sp_list)
         with self._locks["_api_list"]:
@@ -414,7 +423,7 @@ class APIMultiplexer(object):
                 while len(results) < requested_results:
                     elapsed_ms = (timer() - start_time) * 1000
                     if (elapsed_ms > self.MAX_WAIT_TIME and
-                            len(results) > 0) or allowed_failed_futures == 0:
+                        len(results) > 0) or allowed_failed_futures == 0:
                         break
                     # Launch a new future if we have any failed futures.
                     replace_failed_future(
