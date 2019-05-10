@@ -3,6 +3,7 @@ import threading
 
 class ReadWriteLock:
     """Allows multiple readers while blocking the writing"""
+
     def __init__(self):
         self._read_ready = threading.Condition(threading.Lock())
         self._readers = 0
