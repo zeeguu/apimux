@@ -319,9 +319,14 @@ class APIMultiplexer(object):
                         failed_futures += 1
                     logger.warning("API %s raised exception %s" % (
                         future_to_api[future]['name'], future_exception))
-                elif future.result():
+                elif future.result() is not None:
                     results.append((future_to_api[future]['name'],
                                     future.result()))
+                else:
+                    # The API returned an invalid result, mark the future
+                    # as failed and continue fetching from the next one.
+                    with failed_futures_lock:
+                        failed_futures += 1
             # Remove the future from the map
             future_to_api.pop(future, None)
 
